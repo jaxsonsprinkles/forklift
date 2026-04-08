@@ -1,0 +1,14 @@
+Screen {
+    align: center middle;
+}
+
+#select {
+    padding: 1;
+    margin: 0 2;
+    border: solid $accent;
+    width: 50%;
+}
+
+Button {
+    margin: 1;
+}
