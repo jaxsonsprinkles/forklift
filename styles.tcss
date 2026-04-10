@@ -1,19 +1,16 @@
+Grid {
+    grid-size: 2 2;
+}
+
 Screen {
     align: center middle;
 }
 
-#select {
+Container {
     padding: 1;
-    margin: 0 2;
-    border: solid $accent;
-    width: 50%;
-}
-#queue {
-    padding: 1;
-    margin: 0 2;
     border: solid $primary;
-    width: 50%;
 }
+
 Button {
     margin: 1;
 }
