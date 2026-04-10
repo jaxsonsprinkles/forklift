@@ -1,6 +1,6 @@
 from github import Github
 from github import Auth
-from textual import on
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.message import Message
 from textual.widgets import Input, Label, SelectionList, Button, Header, DataTable
@@ -34,6 +34,21 @@ class Welcome(VerticalGroup):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.post_message(self.InputSubmit(event.value.strip()))
 
+class Main(Horizontal):
+    def compose(self) -> ComposeResult:
+
+        with Container(id="select"):
+            yield SelectionList[int]()
+            with Horizontal():
+                yield Button("Submit", variant="primary", id="submit")
+                yield Button("Load more", variant="warning", id="load-more")
+                        
+            
+        with Container(id="queue"):
+            yield DataTable()
+            yield Button("Start", variant="success", id="start")
+
+
 
 class Forklift(App):
     CSS_PATH = "styles.tcss"
@@ -51,62 +66,70 @@ class Forklift(App):
             super().__init__()
 
     def compose(self) -> ComposeResult:
-        if not self.access_token:
-            yield Welcome()
-        else:
-            self.search_results = self.search(self.page) or []
-            yield Header()
-            with Horizontal():
-                if self.search_results:
-                    selections = [Selection(repo.full_name, repo.id)
-                                  for repo in self.search_results]
-                    yield Container(
-                        SelectionList[int](*selections),
-                        Horizontal(
-                            Button("Submit", variant="primary", id="submit"),
-                            Button("Load more", variant="warning",
-                                   id="load-more"),
-                        ),
-                        id="select",
-                    )
-                else:
-                    yield Label("No repositories found for this query.")
-                with Container(id="queue"):
-                    yield DataTable()
-                    self.post_message(self.DataTableCreated())
-                    yield Button("Start", variant="success")
+        yield Header()
+        yield Welcome()
 
-    def _update_queue(self) -> None:
-        table = self.query_one(DataTable)
-        table.clear()
-        table.add_rows((repo.full_name, Text("waiting", style="red"))
-                       for repo in self.queued_repos)
+        main = Main()
+        main.display = False
+        yield main
+            
 
     def on_mount(self) -> None:
         self.title = "Forklift"
+        table = self.query_one(DataTable)
+        table.add_columns("Repository", "Status")
         self.access_token = keyring.get_password("forklift", "access_token")
         if self.access_token:
-            self.g = Github(auth=Auth.Token(self.access_token))
-            self.refresh(recompose=True)
+            self._authenticate(self.access_token)
+            
 
-    def search(self, page) -> any:
-
-        repos = self.g.search_repositories(
-            "language:python good-first-issues:>3 stars:>500")
-
-        if repos.totalCount > 0:
-            return repos[((page-1)*20):(page*20)]
-        else:
-            return None
-
-    @on(Welcome.InputSubmit)
-    def on_input_submitted(self, event: Welcome.InputSubmit) -> None:
-        token = event.value
-
+    def _authenticate(self, token) -> None:
         keyring.set_password("forklift", "access_token", token)
         self.access_token = token
         self.g = Github(auth=Auth.Token(token))
-        self.refresh(recompose=True)
+        self.query_one(Welcome).display = False
+        self.query_one(Main).display = True
+        self._load_repos()
+
+    @work(thread=True)
+    def _load_repos(self) -> None:
+        repos = self._fetch_page(self.page)
+        self.search_results = repos
+        selections = [
+            Selection(repo.full_name, repo.id) for repo in repos
+        ]
+        self.call_from_thread(self._set_selections, selections)
+        
+    def _set_selections(self, selections) -> None:
+        selection_list = self.query_one(SelectionList)
+        for s in selections:
+            selection_list.add_option(s)
+        
+        
+    def _fetch_page(self, page) -> list:
+        repos = self.g.search_repositories(
+            "language:python good-first-issues:>3 stars:>500")
+        if repos.totalCount > 0:
+            return repos[((page-1)*20):(page*20)]
+        else:
+            return []
+        
+    def _update_queue(self) -> None:
+        table = self.query_one(DataTable)
+        for repo in self.queued_repos:
+            try:
+                table.add_row(*(repo.full_name, Text("waiting", style="yellow")), key=repo.id)
+            except Exception:
+                pass
+
+    @on(Button.Pressed, "#start")
+    def _start(self):
+        pass
+            
+
+    @on(Welcome.InputSubmit)
+    def on_input_submitted(self, event: Welcome.InputSubmit) -> None:
+        self._authenticate(event.value)
 
     @on(SelectionList.SelectedChanged)
     def updated_selected(self, event: SelectionList.SelectedChanged) -> None:
@@ -130,8 +153,7 @@ class Forklift(App):
     @on(Button.Pressed, "#load-more")
     def on_loadmore_pressed(self) -> None:
         self.page += 1
-        self.search_results = self.search(self.page)
-        self.refresh(recompose=True)
+        self._load_repos()
 
     @on(DataTableCreated)
     def on_datatable_created(self):
