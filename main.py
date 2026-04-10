@@ -7,8 +7,31 @@ from textual.widgets import Input, Label, SelectionList, Button, Header, DataTab
 from textual.widgets.selection_list import Selection
 from textual.containers import Horizontal, Container, VerticalGroup, Center
 from rich.text import Text
+from claude_agent_sdk import query, ClaudeAgentOptions
 import keyring
+import asyncio
+from git import Repo
 
+
+
+options = ClaudeAgentOptions(
+    system_prompt=open("SYSTEM_PROMPT.md", "r", encoding="utf-8").read(),
+    permission_mode="bypassPermissions",
+    cwd="/forks"
+)
+
+def build_user_prompt(repo):
+    prompt = f"""You have access to a forked GitHub repository located at:
+forks/{repo.full_name.replace("/", "_")}/
+Repository: {repo.full_name}
+Open issues: {[issue.title for issue in repo.get_issues(state='open')]}
+
+Explore the repository yourself. Start with the root directory, then focus on
+source files. Ignore anything in vendor/, dist/, build/, .github/, and any
+auto-generated or lock files.
+
+Find one improvement that fits the criteria in your instructions and produce
+your JSON output."""
 
 class Welcome(VerticalGroup):
     CSS_PATH = "styles.tcss"
@@ -123,8 +146,13 @@ class Forklift(App):
                 pass
 
     @on(Button.Pressed, "#start")
-    def _start(self):
-        pass
+    @work
+    async def _start(self):
+        current_repo = self.queued_repos[0]
+        Repo.clone_from("https://github.com/"+current_repo.full_name, f"./forks/{current_repo.full_name.replace('/', '_')}")
+        async for message in query(prompt=build_user_prompt(current_repo), options=options):
+            print(message)
+
             
 
     @on(Welcome.InputSubmit)
