@@ -3,9 +3,10 @@ from github import Auth
 from textual import on
 from textual.app import App, ComposeResult
 from textual.message import Message
-from textual.widgets import Input, Label, SelectionList, Button
+from textual.widgets import Input, Label, SelectionList, Button, Header, DataTable
 from textual.widgets.selection_list import Selection
 from textual.containers import Horizontal, Container, VerticalGroup, Center
+from rich.text import Text
 import keyring
 
 
@@ -44,11 +45,17 @@ class Forklift(App):
     queued_repos: list = []
     page: int = 1
 
+    class DataTableCreated(Message):
+
+        def __init__(self) -> None:
+            super().__init__()
+
     def compose(self) -> ComposeResult:
         if not self.access_token:
             yield Welcome()
         else:
             self.search_results = self.search(self.page) or []
+            yield Header()
             with Horizontal():
                 if self.search_results:
                     selections = [Selection(repo.full_name, repo.id)
@@ -65,12 +72,18 @@ class Forklift(App):
                 else:
                     yield Label("No repositories found for this query.")
                 with Container(id="queue"):
-                    if self.queued_repos:
-                        yield Label("\n".join(repo.full_name for repo in self.queued_repos))
-                    else:
-                        yield Label("No repositories in queue.")
+                    yield DataTable()
+                    self.post_message(self.DataTableCreated())
+                    yield Button("Start", variant="success")
+
+    def _update_queue(self) -> None:
+        table = self.query_one(DataTable)
+        table.clear()
+        table.add_rows((repo.full_name, Text("waiting", style="red"))
+                       for repo in self.queued_repos)
 
     def on_mount(self) -> None:
+        self.title = "Forklift"
         self.access_token = keyring.get_password("forklift", "access_token")
         if self.access_token:
             self.g = Github(auth=Auth.Token(self.access_token))
@@ -112,13 +125,18 @@ class Forklift(App):
 
         if new_repos:
             self.queued_repos.extend(new_repos)
-            self.refresh(recompose=True)
+            self._update_queue()
 
     @on(Button.Pressed, "#load-more")
     def on_loadmore_pressed(self) -> None:
         self.page += 1
         self.search_results = self.search(self.page)
         self.refresh(recompose=True)
+
+    @on(DataTableCreated)
+    def on_datatable_created(self):
+        table = self.query_one(DataTable)
+        table.add_columns(*("name", "status"))
 
 
 if __name__ == "__main__":
