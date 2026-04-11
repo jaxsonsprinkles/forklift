@@ -3,16 +3,19 @@ from github import Auth
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.message import Message
-from textual.widgets import Input, Label, SelectionList, Button, Header, Footer, DataTable, RichLog
+from textual.widgets import Input, Label, SelectionList, Link, Header, Footer, DataTable, RichLog
 from textual.widgets.selection_list import Selection
 from textual.containers import Horizontal, Container, VerticalGroup, Center, Grid
 from textual.coordinate import Coordinate
+from textual.validation import Length
 from rich.text import Text
 from claude_agent_sdk import query, ClaudeAgentOptions
-import keyring
+import os
 import asyncio
 from git import Repo
+from dotenv import load_dotenv, set_key
 
+load_dotenv()
 
 options = ClaudeAgentOptions(
     system_prompt=open("SYSTEM_PROMPT.md", "r", encoding="utf-8").read(),
@@ -22,7 +25,7 @@ options = ClaudeAgentOptions(
 
 
 def build_user_prompt(repo):
-    prompt = f"""You have access to a forked GitHub repository located at:
+    return f"""You have access to a forked GitHub repository located at:
 forks/{repo.full_name.replace("/", "_")}/
 Repository: {repo.full_name}
 Open issues: {[issue.title for issue in repo.get_issues(state='open')]}
@@ -40,9 +43,10 @@ class Welcome(VerticalGroup):
 
     class InputSubmit(Message):
 
-        def __init__(self, value) -> None:
+        def __init__(self, github_token, claude_token) -> None:
             super().__init__()
-            self.value = value
+            self.github = github_token
+            self.claude = claude_token
 
     def compose(self) -> ComposeResult:
         yield Center(Label("""███████╗ ██████╗ ██████╗ ██╗  ██╗██╗     ██╗███████╗████████╗
@@ -52,15 +56,36 @@ class Welcome(VerticalGroup):
 ██║     ╚██████╔╝██║  ██║██║  ██╗███████╗██║██║        ██║   
 ╚═╝      ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝╚═╝        ╚═╝   
                                                              """))
-        yield Label("Enter your access token (https://github.com/settings/tokens)")
-        yield Input()
+        yield Label("Enter your access token and Claude Code OAuth Token.")
+        yield Link("Need help?", url="https://github.com/jaxsonsprinkles/forklift/README.md")
+        # Numbers are arbitrary but there to prevent empty input submissions
+        yield Input(password=True, placeholder="Github access token", id="github", validators=[Length(30, 200)])
+        yield Input(password=True, placeholder="Claude token", id="claude", validators=[Length(50, 200)])
 
-    @on(Input.Submitted)
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.post_message(self.InputSubmit(event.value.strip()))
+    def action_submit(self) -> None:
+        github_input = self.query_one("#github", Input)
+        claude_input = self.query_one("#claude", Input)
+
+        if not github_input.validate(github_input.value.strip()).is_valid:
+            github_input.focus()
+            return
+
+        if not claude_input.validate(claude_input.value.strip()).is_valid:
+            claude_input.focus()
+            return
+
+        self.post_message(self.InputSubmit(
+            github_input.value.strip(), claude_input.value.strip()))
 
 
 class Main(Horizontal):
+    BINDINGS = [
+        ("l", "load_more", "Load more repos"),
+        ("e", "start", "Start queue"),
+        ("up", "select_previous", "Select previous"),
+        ("down", "select_next", "Select next"),
+    ]
+
     def compose(self) -> ComposeResult:
 
         with Grid():
@@ -77,19 +102,28 @@ class Main(Horizontal):
             with Container(id="logs"):
                 yield RichLog()
 
+    def action_load_more(self) -> None:
+        self.app.action_load_more()
+
+    def action_start(self) -> None:
+        self.app.action_start()
+
+    def action_select_previous(self) -> None:
+        self.app.action_select_previous()
+
+    def action_select_next(self) -> None:
+        self.app.action_select_next()
+
 
 class Forklift(App):
     CSS_PATH = "styles.tcss"
     BINDINGS = [
-        ("s", "submit", "Submit to queue"),
-        ("l", "load_more", "Load more repos"),
-        ("e", "start", "Start queue"),
-        ("up", "select_previous", "Select previous"),
-        ("down", "select_next", "Select next"),
+        ("s", "submit", "Submit"),
         ("q", "quit", "Quit")
     ]
 
     access_token: str | None = None
+    claude_token: str | None = None
     g: Github | None = None
     search_results: list = []
     selected_repo_ids: list[int] = []
@@ -118,16 +152,20 @@ class Forklift(App):
         self.query_one("#select").border_title = "Repo select"
         self.query_one("#queue").border_title = "Queue"
         self.query_one("#logs").border_title = "Logs"
-        self.access_token = keyring.get_password("forklift", "access_token")
-        if self.access_token:
-            self._authenticate(self.access_token)
+        self.access_token = os.getenv("GITHUB_ACCESS_TOKEN")
+        self.claude_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN")
+        if self.access_token and self.claude_token:
+            self._authenticate(self.access_token, self.claude_token)
 
-    def _authenticate(self, token) -> None:
-        keyring.set_password("forklift", "access_token", token)
-        self.access_token = token
-        self.g = Github(auth=Auth.Token(token))
+    def _authenticate(self, github, claude) -> None:
+        set_key(".env", "GITHUB_ACCESS_TOKEN", github)
+        self.access_token = github
+        self.g = Github(auth=Auth.Token(github))
+        set_key(".env", "CLAUDE_CODE_OAUTH_TOKEN", claude)
+        self.claude_token = claude
         self.query_one(Welcome).display = False
         self.query_one(Main).display = True
+        self.query_one(SelectionList).focus()
         self._load_repos()
 
     @work(thread=True)
@@ -153,19 +191,31 @@ class Forklift(App):
             return []
 
     def action_submit(self) -> None:
+        if self.query_one(Welcome).display:
+            self.query_one(Welcome).action_submit()
+            return
+
         self.on_submit_pressed()
 
     def action_load_more(self) -> None:
+        if self.query_one(Welcome).display:
+            return
         self.on_loadmore_pressed()
 
     def action_start(self) -> None:
+        if self.query_one(Welcome).display:
+            return
         self._start()
 
     def action_select_previous(self) -> None:
+        if self.query_one(Welcome).display:
+            return
         selection_list = self.query_one(SelectionList)
         selection_list.action_cursor_up()
 
     def action_select_next(self) -> None:
+        if self.query_one(Welcome).display:
+            return
         selection_list = self.query_one(SelectionList)
         selection_list.action_cursor_down()
 
@@ -190,6 +240,7 @@ class Forklift(App):
                                  Text("In progress", style="yellow"))
             log.write(
                 Text(f"-----({repo.full_name})-----", style="bold purple"))
+            log.write("Cloning repository...")
             await asyncio.to_thread(Repo.clone_from, "https://github.com/"+repo.full_name,
                                     f"./forks/{repo.full_name.replace('/', '_')}")
             log.write("Cloned")
@@ -198,7 +249,7 @@ class Forklift(App):
 
     @on(Welcome.InputSubmit)
     def on_input_submitted(self, event: Welcome.InputSubmit) -> None:
-        self._authenticate(event.value)
+        self._authenticate(event.github, event.claude)
 
     @on(SelectionList.SelectedChanged)
     def updated_selected(self, event: SelectionList.SelectedChanged) -> None:

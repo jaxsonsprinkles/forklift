@@ -14,3 +14,7 @@ Container {
 Button {
     margin: 1;
 }
+
+Input {
+    margin: 1;
+}
